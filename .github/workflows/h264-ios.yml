@@ -4,6 +4,10 @@ name: H264 codec test and iOS shell
 on:
   workflow_dispatch:
     inputs:
+      run_checks:
+        description: Run regression suites before build
+        type: boolean
+        default: true
       build_shell:
         description: Build unsigned iOS shell after tests
         type: boolean
@@ -46,6 +50,7 @@ jobs:
           xcodebuild -version | tee build/h264-evidence/toolchain.txt
           xcrun --sdk iphoneos --show-sdk-version | tee -a build/h264-evidence/toolchain.txt
       - name: Verify regression fails without implementation
+        if: github.event_name != 'workflow_dispatch' || inputs.run_checks
         shell: bash
         run: |
           impl=graphics/nvn/gfx/nvn/nvn2_codec.c
@@ -64,12 +69,14 @@ jobs:
           test "$rc" -eq 1
           grep -q 'H264_INIT_PROBE rejected valid AVC configuration' build/h264-evidence/baseline.log
       - name: Test fixed codec, pixels, timestamps, flush and EOS
+        if: github.event_name != 'workflow_dispatch' || inputs.run_checks
         shell: bash
         run: |
           set -o pipefail
           gmake native-test-nvn2_codec 2>&1 | tee build/h264-evidence/fixed.log
           S2A_H264_INIT_PROBE=1 build/tests/t_nvn2_codec 2>&1 | tee build/h264-evidence/fixed-probe.log
       - name: Verify NvRmSync regression rejects old export
+        if: github.event_name != 'workflow_dispatch' || inputs.run_checks
         shell: bash
         run: |
           impl=graphics/nvn/gfx/nvn/hle_nvn.c
@@ -87,11 +94,13 @@ jobs:
           test "$rc" -ne 0
           grep -q 'NVRM_SYNC_PROBE SDK extraction rejected index 0: count=0' build/h264-evidence/nvrm-baseline.log
       - name: Test completed NvRmSync export and legacy fences
+        if: github.event_name != 'workflow_dispatch' || inputs.run_checks
         shell: bash
         run: |
           set -o pipefail
           S2A_NVRM_SYNC_PROBE=1 gmake native-test-nvn_nvrm 2>&1 | tee build/h264-evidence/nvrm-fixed.log
       - name: Verify public source checks
+        if: github.event_name != 'workflow_dispatch' || inputs.run_checks
         run: |
           python3 tools/layer_map.py check
           python3 tools/test_wired_lint.py

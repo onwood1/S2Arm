@@ -189,7 +189,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             int dest,
             bool byteAddress,
             bool isBindless,
-            bool compareAndSwap)
+            bool compareAndSwap,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
         {
             SamplerType type = ConvertSamplerType(dimensions);
 
@@ -259,7 +260,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             // TODO: FP and 64-bit formats.
             TextureFormat format = size is SuatomSize.Sd32 or SuatomSize.Sd64
-                ? (isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm))
+                ? (isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, cbufSlot))
                 : GetTextureFormat(size);
 
             if (compareAndSwap)
@@ -283,7 +284,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 type,
                 format,
                 flags,
-                TextureOperation.DefaultCbufSlot,
+                cbufSlot,
                 imm);
 
             Operand res = context.ImageAtomic(type, format, flags, setAndBinding, sources);
@@ -471,7 +472,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             int srcB,
             int srcC,
             bool byteAddress,
-            bool isBindless)
+            bool isBindless,
+            int cbufSlot = TextureOperation.DefaultCbufSlot)
         {
             SamplerType type = ConvertSamplerType(dimensions);
 
@@ -539,7 +541,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             // TODO: FP and 64-bit formats.
             TextureFormat format = size is SuatomSize.Sd32 or SuatomSize.Sd64
-                ? (isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm))
+                ? (isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormatAtomic(context.TranslatorContext.GpuAccessor, imm, cbufSlot))
                 : GetTextureFormat(size);
 
             sourcesList.Add(Rb());
@@ -558,7 +560,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 type,
                 format,
                 flags,
-                TextureOperation.DefaultCbufSlot,
+                cbufSlot,
                 imm);
 
             context.ImageAtomic(type, format, flags, setAndBinding, sources);

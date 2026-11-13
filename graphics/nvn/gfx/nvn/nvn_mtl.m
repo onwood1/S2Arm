@@ -7158,7 +7158,7 @@ static struct {
     const prog_t *bst[5];      // program bound per stage (NVN stage bits 1 vertex 2 fragment 4 geometry 8 / 16 tessellation, indices as in NvProg.sh), see bind_stages
     uint64_t bser[5];          // its serial at bind time: a stage kept from an earlier bind is read only while the object still carries it (bind_stages)
     blend_st blend[8]; color_st color; chmask_st chmask; ms_st ms; poly_st poly; ds_st ds;
-    va_st attr[16]; int nattr; vs_st stream[16]; int nstream;
+    va_st attr[NVN_HOST_VERTEX_ATTRIBS]; int nattr; vs_st stream[16]; int nstream;
     NVNbufferRange vbuf[16];
     p_bind_buf ubo[6][16], ssbo[6][16];
     uint64_t tex[6][NTEX], samp[6][128], img[6][32];
@@ -8006,12 +8006,12 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
                                   vd.layouts[30].stride = 16; vd.layouts[30].stepFunction = MTLVertexStepFunctionConstant; vd.layouts[30].stepRate = 0; } while (0)   // reads the zero buffer
     for (int v = 0; v < rf->nv; v++) {
         int loc = rf->v[v].loc, a = rf->v[v].nvn;   // Metal slot loc ← NVN attribute a
-        MTLVertexFormat vf = a < 16 ? vfmt(k->attr[a].fmt) : MTLVertexFormatInvalid;
+        MTLVertexFormat vf = a < NVN_HOST_VERTEX_ATTRIBS ? vfmt(k->attr[a].fmt) : MTLVertexFormatInvalid;
         // With the shadow inputs the attribute goes to the declaration of its format's class (at) and the input's other declarations read the zero buffer
         int ct = on ? vin_ct(rf, v, vin_fmt(k, a), 1) : rf->v[v].ct, at = ct == rf->v[v].ct ? loc : rf->v[v].sh[ct];
         if (on) { if (at != loc) ZERO_ATTR(loc, rf->v[v].ct); for (int q = 0; q < 3; q++) if (rf->v[v].sh[q] != 0xff && rf->v[v].sh[q] != at) ZERO_ATTR(rf->v[v].sh[q], q); }
         // When a >= S.nattr, k.attr[a] keeps the 0 from memset, vfmt(0) is Invalid, the same fallback branch is taken and the RED_ONCE condition of fmt being non-0 does not hold.
-        if (a < 16 && k->attr[a].fmt && vf == MTLVertexFormatInvalid) RED_ONCE(15, "vertex attribute format %#x not mapped", k->attr[a].fmt);
+        if (a < NVN_HOST_VERTEX_ATTRIBS && k->attr[a].fmt && vf == MTLVertexFormatInvalid) RED_ONCE(15, "vertex attribute format %#x not mapped", k->attr[a].fmt);
         if (vf == MTLVertexFormatInvalid) { ZERO_ATTR(at, ct); continue; }
         int st = k->attr[a].stream;
         if (vconv_wanted(rf, v, k, on) && nconv < VCONV_MAX) {   // converted on the CPU at draw time (vconv_bind): the register's 32-bit values, 4 components, its own slot
@@ -8038,8 +8038,8 @@ static MTLRenderPipelineDescriptor *pso_desc(const pso_key *k, NvShader *vs, NvS
 // state at lmap[i] (pso_desc), kept as it is. fs: the fragment shader (its output map), or nil. Called where the key is made (pso_key_fill) and on recorded keys as they are read (warm_task)
 static void pso_key_norm(pso_key *k, NvShader *vs, NvShader *fs, int merged) {
     if (vs) {   // vertex attributes the vertex shader does not read, and streams no kept attribute uses (pso_key_fill copies only those; keys from elsewhere may carry more)
-        uint32_t read = 0, used = 0; for (int v = 0; v < vs->rf.nv; v++) if (vs->rf.v[v].nvn < 16) read |= 1u << vs->rf.v[v].nvn;
-        for (int a = 0; a < 16; a++) { if (!(read >> a & 1)) memset(&k->attr[a], 0, sizeof k->attr[a]); else if (k->attr[a].stream < 16) used |= 1u << k->attr[a].stream; }
+        uint32_t read = 0, used = 0; for (int v = 0; v < vs->rf.nv; v++) if (vs->rf.v[v].nvn < NVN_HOST_VERTEX_ATTRIBS) read |= 1u << vs->rf.v[v].nvn;
+        for (int a = 0; a < NVN_HOST_VERTEX_ATTRIBS; a++) { if (!(read >> a & 1)) memset(&k->attr[a], 0, sizeof k->attr[a]); else if (k->attr[a].stream < 16) used |= 1u << k->attr[a].stream; }
         for (int i = 0; i < 16; i++) if (!(used >> i & 1)) memset(&k->stream[i], 0, sizeof k->stream[i]);
     }
     if (merged) return;
@@ -8062,7 +8062,7 @@ static void pso_key_fill(pso_key *k, NvShader *vs, NvShader *fs, const uint32_t 
     // 高级混合位（blend_st.adv_*，#344）只为 NVN 查询保真、渲染器不模拟，进键前清掉：键只含影响编译结果的状态，否则同一条管线按不影响画面的位拆成多份、白编（10-25 维护者）
     for (int i = 0; i < 8; i++) if (k->cfmt[i] || lmap) { k->blend[i] = S.blend[i]; k->blend[i].adv_mode = k->blend[i].adv_overlap = k->blend[i].adv_premul = k->blend[i].adv_normdst = 0; }
     const nvn_refl *rf = &vs->rf;
-    for (int v = 0; v < rf->nv; v++) { int a = rf->v[v].nvn; if (a < 16 && a < S.nattr) { k->attr[a] = S.attr[a]; int st = S.attr[a].stream; if (st < 16) k->stream[st] = S.stream[st]; } }
+    for (int v = 0; v < rf->nv; v++) { int a = rf->v[v].nvn; if (a < NVN_HOST_VERTEX_ATTRIBS && a < S.nattr) { k->attr[a] = S.attr[a]; int st = S.attr[a].stream; if (st < 16) k->stream[st] = S.stream[st]; } }
     pso_key_norm(k, vs, fs, lmap);
 }
 // ---- Parallel precompile: pipelines met for the first time used to be compiled synchronously one by one on the submit thread; 9 misses in a row in one frame = 284 ms (heavy scene on a real device).
@@ -10555,7 +10555,7 @@ static int state_op(uint32_t op, const void *a, uint32_t size) {
             break;
         }
         case OP_BIND_VATTR: {   // formats as the vertex fetch reads them (nvn_vattr_fmt_canon: RGBX → RGB), compared after that so a rebind of the same state stays clean
-            const p_bind_vattr *b = a; va_st at[16]; memcpy(at, b->st, 4 * b->n); for (int i = 0; i < b->n; i++) at[i].fmt = nvn_vattr_fmt_canon(at[i].fmt);
+            const p_bind_vattr *b = a; va_st at[NVN_HOST_VERTEX_ATTRIBS]; memcpy(at, b->st, 4 * b->n); for (int i = 0; i < b->n; i++) at[i].fmt = nvn_vattr_fmt_canon(at[i].fmt);
             if (S.nattr != b->n || memcmp(S.attr, at, 4 * b->n)) { memcpy(S.attr, at, 4 * b->n); S.nattr = b->n; g_pso_dirty = 1; } break; }
         case OP_BIND_VSTREAM: { const p_bind_vstream *b = a; if (S.nstream != b->n || memcmp(S.stream, b->st, 8 * b->n)) { memcpy(S.stream, b->st, 8 * b->n); S.nstream = b->n; g_pso_dirty = 1; } break; }
         case OP_BIND_VBUF: { p_bind_vbuf t; const p_bind_vbuf *b = bind_vbuf_rec(a, size, &t); memcpy(&S.vbuf[b->first], b->r, sizeof *b->r * b->n); break; }
@@ -11801,7 +11801,7 @@ static int kd_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
     int count = dw ? dw->count : di->count, inst = dw ? dw->instances : di->instances, first = dw ? dw->first : 0, binst = dw ? dw->base_instance : di->base_instance;
     fprintf(stderr, "[kd] F%llu pass %llu vs=%s fs=%s prim %d vertices %d instances %d first %d base_vertex %d base_instance %d target %s\n", (unsigned long long)atomic_load(&g_cur_frame), g_stat_pass,
             pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1]->key, dw ? dw->prim : di->prim, count, inst, first, di ? di->base_vertex : 0, binst, R.rt.n && R.rt.color[0] ? "yes" : "no");
-    for (int i = 0; i < S.nattr && i < 16; i++) fprintf(stderr, "[kd]   attr %d format %#x offset %u stream %u\n", i, (unsigned)S.attr[i].fmt, (unsigned)S.attr[i].offset, (unsigned)S.attr[i].stream);
+    for (int i = 0; i < S.nattr && i < NVN_HOST_VERTEX_ATTRIBS; i++) fprintf(stderr, "[kd]   attr %d format %#x offset %u stream %u\n", i, (unsigned)S.attr[i].fmt, (unsigned)S.attr[i].offset, (unsigned)S.attr[i].stream);
     for (int s_ = 0; s_ < S.nstream && s_ < 16; s_++) {
         uint32_t st = S.stream[s_].stride, dv = S.stream[s_].divisor;
         fprintf(stderr, "[kd]   stream %d stride %u divisor %u buffer %#llx size %llu\n", s_, st, dv, (unsigned long long)S.vbuf[s_].address, (unsigned long long)S.vbuf[s_].size);
@@ -13520,7 +13520,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
                 o += snprintf(ub + o, sizeof ub - o, " r%d=%016llx/%llu/%016llx", v->rf.b[i].reg, (unsigned long long)h, (unsigned long long)u->size, (unsigned long long)h64); }
             PD("u %llu%s", g_stat_pass, ub); }
         if (all) { char vb[1600]; size_t o = 0; o += snprintf(vb + o, sizeof vb - o, "nattr=%d", S.nattr);
-            for (int i = 0; i < S.nattr && i < 16 && o < sizeof vb - 100; i++) { int st = S.attr[i].stream; if (!S.attr[i].fmt) continue;   // only attributes with a format
+            for (int i = 0; i < S.nattr && i < NVN_HOST_VERTEX_ATTRIBS && o < sizeof vb - 100; i++) { int st = S.attr[i].stream; if (!S.attr[i].fmt) continue;   // only attributes with a format
                 o += snprintf(vb + o, sizeof vb - o, " a%d{fmt=%#x off=%d s=%d stride=%u div=%u vb=%#llx/%llu}", i, S.attr[i].fmt, S.attr[i].offset, st,
                               st < 16 ? S.stream[st].stride : 0, st < 16 ? S.stream[st].divisor : 0, st < 16 ? (unsigned long long)S.vbuf[st].address : 0ull, st < 16 ? (unsigned long long)S.vbuf[st].size : 0ull); }
             PD("v %llu %s", g_stat_pass, vb);

@@ -10,7 +10,7 @@ typedef struct {
     // fc: the fragment function is the shader's sampler-emulation variant specialized with these SE_* bits (nvn_red.h; nvn_mtl.m se_fn), 0 = the library's main0. It takes a byte of what
     //   was a 32-bit a2c holding 0 / 1: the layout and size are unchanged, so an fc 0 key is byte for byte the key recorded before (pso_user.tsv / pso_manifest.tsv R lines, the pipeline
     //   archive, pso_seed.py's length check)
-    va_st attr[16]; vs_st stream[16];
+    va_st attr[NVN_HOST_VERTEX_ATTRIBS]; vs_st stream[16];
     uint8_t lmap[8]; const void *fsfn;
 } pso_key;
 

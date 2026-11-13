@@ -5,6 +5,13 @@
 #include <stdint.h>
 #include <string.h>
 
+// Metal state can retain all 32 NVN2 attribute descriptions; vertex streams
+// keep their independent 16-slot limit. Other backends retain their old limit.
+#if defined(__APPLE__)
+#define NVN_HOST_VERTEX_ATTRIBS 32
+#else
+#define NVN_HOST_VERTEX_ATTRIBS 16
+#endif
 int s2a_platform_ounce(void);   // 原生层导出；直连层单测不链原生层，nvn2.c 里有弱定义缺省 0
 int nvn2_on(void);              // 本进程是 Switch 2 游戏（首次调用时读一次）
 

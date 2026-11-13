@@ -63,7 +63,7 @@ int nvn2_drv_item(const nvn2_drv *d, unsigned item, int *out) {
 enum { NVN2_RT = -1 };
 static const int g_devinfo2[] = {
     [0x00] = 231, [0x01] = 39, [0x02] = 14, [0x03] = 65536, [0x04] = 256, [0x05] = 8, [0x06] = 16 /* NVN2 32 */, [0x07] = 4, [0x08] = 16, [0x09] = 32, [0x0A] = 16, [0x0B] = 4,
-    [0x0C] = 4, [0x0D] = 4, [0x0E] = 16 /* NVN2 32 */, [0x0F] = 32, [0x10] = 32, [0x11] = 256, [0x12] = 256, [0x13] = 4, [0x14] = 8, [0x15] = 512, [0x16] = 256, [0x17] = NVN2_RT,
+    [0x0C] = 4, [0x0D] = 4, [0x0E] = NVN_HOST_VERTEX_ATTRIBS, [0x0F] = 32, [0x10] = 32, [0x11] = 256, [0x12] = 256, [0x13] = 4, [0x14] = 8, [0x15] = 512, [0x16] = 256, [0x17] = NVN2_RT,
     [0x18] = NVN2_RT, [0x19] = 4096, [0x1A] = 16384, [0x1B] = 16, [0x1C] = 1024, [0x1D] = 1024, [0x1E] = 64, [0x1F] = 1024, [0x20] = 2147483647, [0x21] = 65535, [0x22] = 65535,
     [0x23] = 8, [0x24] = 1048576, [0x25] = 4096, [0x26] = 16, [0x27] = 4096, [0x28] = 1, [0x29] = 1, [0x2A] = 1, [0x2B] = NVN2_RT, [0x2C] = 16, [0x2D] = NVN2_RT,
     [0x2E] = 201, [0x2F] = 201, [0x30] = 20, [0x31] = 0, [0x32] = 1, [0x33] = 8, [0x34] = 8, [0x35] = 4, [0x36] = 32, [0x37] = NVN2_RT, [0x38] = NVN2_RT, [0x39] = 128,
@@ -88,7 +88,7 @@ int nvn2_device_integer(unsigned w, int *out) {
         *out = 0; return 1;
     }
     *out = g_devinfo2[w];
-    // 0 号是主版本，跳表前就装好（不在常量项里）；其余按本游戏 sdk 里驱动的常量（宿主 16 个顶点槽的两项不跟驱动的 32）
+    // 0 号是主版本，跳表前就装好（不在常量项里）；其余按本游戏 sdk 里驱动的常量（顶点流和顶点属性各按宿主独立容量，不跟驱动值）
     if (w != 0 && w != 0x06 && w != 0x0E) dm_nvn2_driver_item(w, out);
     if (w <= 1) { static _Atomic int logged; if (!atomic_exchange(&logged, 1)) { int mn = g_devinfo2[1]; int got = dm_nvn2_driver_item(1, &mn);
         LOG("[nvn] 设备 API 231.%d（Switch 2 NVN2；%s）", mn, got ? "游戏 sdk 里驱动的常量" : "sdk 里没认出驱动跳表，按已知最新"); } }

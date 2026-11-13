@@ -1,3 +1,4 @@
+#include "nvn2.h"
 // Shader reflection json (B: produced by translating the original Switch shaders, output of tools/dmsh_build.py) → fixed-length C arrays (nvn_refl.h)
 #import "nvn_refl.h"
 #import <Metal/Metal.h>
@@ -186,7 +187,7 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
         NSDictionary *ra = j[@"raster"];
         o->pos_attr = -1; o->may_discard = 1; o->writes_smask = 1;
         if ([ra isKindOfClass:[NSDictionary class]]) {
-            if (ra[@"pos_attr"]) { int pa = [ra[@"pos_attr"] intValue]; o->pos_attr = (int8_t)(pa >= 0 && pa < 16 ? pa : -1); o->pos_w1 = [ra[@"pos_w"] isEqual:@"one"]; }
+            if (ra[@"pos_attr"]) { int pa = [ra[@"pos_attr"] intValue]; o->pos_attr = (int8_t)(pa >= 0 && pa < NVN_HOST_VERTEX_ATTRIBS ? pa : -1); o->pos_w1 = [ra[@"pos_w"] isEqual:@"one"]; }
             if (ra[@"discard"]) o->may_discard = [ra[@"discard"] intValue] != 0;
             if (ra[@"sample_mask"]) o->writes_smask = [ra[@"sample_mask"] intValue] != 0;
             for (NSNumber *c in ra[@"colors"]) if (c.intValue >= 0 && c.intValue < 8) o->color_mask |= (uint8_t)(1u << c.intValue);
@@ -204,7 +205,7 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
         NSArray *su = [ra isKindOfClass:[NSDictionary class]] ? ra[@"scr_uv"] : nil;   // 10-30：屏幕坐标插值量（见 nvn_refl.h scr_uv）
         if ([su isKindOfClass:[NSArray class]]) for (NSNumber *l in su) if ([l isKindOfClass:[NSNumber class]] && l.intValue >= 0 && l.intValue < 32) o->scr_uv |= 1u << l.intValue;
         NSDictionary *uv = [ra isKindOfClass:[NSDictionary class]] ? ra[@"uv_from_attr"] : nil;
-        if ([uv isKindOfClass:[NSDictionary class]]) for (NSString *k in uv) { int l = k.intValue, a = [uv[k] intValue]; if (l >= 0 && l < 32 && a >= 0 && a < 16) o->uv_attr[l] = (int8_t)a; }
+        if ([uv isKindOfClass:[NSDictionary class]]) for (NSString *k in uv) { int l = k.intValue, a = [uv[k] intValue]; if (l >= 0 && l < 32 && a >= 0 && a < NVN_HOST_VERTEX_ATTRIBS) o->uv_attr[l] = (int8_t)a; }
         NSDictionary *fe = j[@"fetch"];
         if ([fe isKindOfClass:[NSDictionary class]]) {
             for (NSDictionary *c in fe[@"calls"]) { int i = [c[@"fc"] intValue], r = [c[@"tex_reg"] intValue], l = [c[@"varying_locn"] intValue];

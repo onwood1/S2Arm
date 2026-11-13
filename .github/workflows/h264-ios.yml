@@ -69,6 +69,25 @@ jobs:
           set -o pipefail
           gmake native-test-nvn2_codec 2>&1 | tee build/h264-evidence/fixed.log
           S2A_H264_INIT_PROBE=1 build/tests/t_nvn2_codec 2>&1 | tee build/h264-evidence/fixed-probe.log
+      - name: Verify NvRmSync regression rejects old export
+        shell: bash
+        run: |
+          impl=graphics/nvn/gfx/nvn/hle_nvn.c
+          cp "$impl" "$RUNNER_TEMP/hle_nvn.fixed.c"
+          trap 'cp "$RUNNER_TEMP/hle_nvn.fixed.c" "$impl"' EXIT
+          git show 0c81633:graphics/nvn/gfx/nvn/hle_nvn.c > "$impl"
+          set +e
+          gmake native-test-nvn_nvrm > build/h264-evidence/nvrm-baseline.log 2>&1
+          rc=$?
+          set -e
+          cat build/h264-evidence/nvrm-baseline.log
+          test "$rc" -ne 0
+          grep -q 'NVRM_SYNC_PROBE SDK extraction rejected index 0: count=0' build/h264-evidence/nvrm-baseline.log
+      - name: Test completed NvRmSync export and legacy fences
+        shell: bash
+        run: |
+          set -o pipefail
+          gmake native-test-nvn_nvrm 2>&1 | tee build/h264-evidence/nvrm-fixed.log
       - name: Verify public source checks
         run: |
           python3 tools/layer_map.py check

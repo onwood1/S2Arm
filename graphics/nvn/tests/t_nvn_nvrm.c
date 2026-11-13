@@ -18,6 +18,25 @@
 #include <unistd.h>
 
 extern void *h_nvnBootstrapLoader(const char *name);
+static int ounce;
+int s2a_platform_ounce(void) { return ounce; }
+// SDK NvRmSyncCreateFromSyncpointsWithAttr contract: existing object in attr+24;
+// the SDK owns its vtable and release semantics, not the NVN frontend.
+static unsigned rm_creates;
+static int rm_create(const uint32_t *f, int count, const void *attr, void **out) {
+    const uint8_t *a = attr; void *rm; memcpy(&rm, a + 24, 8);
+    if (count != 1 || f[0] != UINT32_MAX || f[1] != 0 || !rm) return 4;
+    for (int i = 0; i < 24; i++) if (a[i]) return 4;
+    uint32_t cap; memcpy(&cap, (uint8_t *)rm + 16, 4); if (cap < 1) return 4;
+    const uint64_t vt = 0x1234567812345678ull;
+    const uint32_t type = 3, n = 1;
+    memcpy(rm, &vt, 8); memcpy((uint8_t *)rm + 8, &type, 4);
+    memcpy((uint8_t *)rm + 12, &n, 4); memcpy((uint8_t *)rm + 36, f, 8);
+    *out = rm; rm_creates++; return 0;
+}
+void *guest_sym(const char *name) {
+    return !strcmp(name, "NvRmSyncCreateFromSyncpointsWithAttr") ? (void *)rm_create : NULL;
+}
 static const char *phase = "准备";
 static unsigned checks;
 static NVNdevice device;
@@ -117,6 +136,27 @@ int main(void) {
       uint32_t out[3] = {1, 2, 0xA5A5A5A5u}; CHECK(get(&sy, out));
       CHECK(out[0] == 0xFFFFFFFFu && out[1] == 0); CHECK(out[2] == 0xA5A5A5A5u);   // 只写 8 字节
       printf("%s：通过\n", phase); }
+
+    phase = "Switch 2 NvRmSync: SDK extraction sees one completed fence";
+    {
+      typedef NVNboolean (*get_fn)(const NVNsync *, void *);
+      get_fn get = (get_fn)load("nvnSyncGetNvRmSyncNVX");
+      uint8_t rm[72] = {0}; uint32_t type = 1, cap = 1;
+      memcpy(rm + 8, &type, 4); memcpy(rm + 16, &cap, 4);
+      memset(rm + 64, 0xa5, 8); ounce = 1;
+      CHECK(get(NULL, rm));
+      uint32_t n, id, value; memcpy(&n, rm + 12, 4);
+      // SDK ExtractSyncpoint(index=0) returns error 4 when count <= index.
+      if (n <= 0) { fprintf(stderr, "NVRM_SYNC_PROBE SDK extraction rejected index 0: count=%u\n", n); return 1; }
+      memcpy(&id, rm + 36, 4); memcpy(&value, rm + 40, 4);
+      CHECK(n == 1 && id == UINT32_MAX && value == 0 && rm_creates == 1);
+      memcpy(&type, rm + 8, 4); CHECK(type == 3);
+      for (int i = 64; i < 72; i++) CHECK(rm[i] == 0xa5);
+      // No inline slot: SDK reports a failure; NVN must propagate it.
+      memset(rm, 0, 64); CHECK(!get(NULL, rm)); CHECK(rm_creates == 1);
+      ounce = 0;
+      printf("NVRM_SYNC_PROBE SDK extraction accepted completed fence\n");
+    }
 
     phase = "nvnSyncGetNvRmSyncNVX：GPU 栅栏没完成不导出「已触发」（审计 #1534 P1-47）";
     { typedef NVNboolean (*get_fn)(const NVNsync *, void *); get_fn get = (get_fn)load("nvnSyncGetNvRmSyncNVX");

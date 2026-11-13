@@ -86,7 +86,39 @@ static void check_surf(nvx_fn nvx, const NVNtexture *t, const surf_want *e) {
     for (int k = 64; k < 88; k++) CHECK(s[k] == 0);
     for (int k = 88; k < 96; k++) CHECK(s[k] == 0xcd);   // 只写 88 字节
 }
+static int sync_object_probe(void) {
+    // Preserve the legacy ABI and its 8-byte output bound in the same loop.
+    typedef NVNboolean (*get_fn)(const NVNsync *, void *);
+    uint32_t legacy[3] = {1, 2, 0xa5a5a5a5};
+    get_fn get = (get_fn)load("nvnSyncGetNvRmSyncNVX"); ounce = 0;
+    CHECK(get(NULL, legacy));
+    CHECK(legacy[0] == UINT32_MAX && legacy[1] == 0 && legacy[2] == 0xa5a5a5a5);
+    phase = "Switch 2 NvRmSync: SDK extraction sees one completed fence";
+    {
+      typedef NVNboolean (*get_fn)(const NVNsync *, void *);
+      get_fn get = (get_fn)load("nvnSyncGetNvRmSyncNVX");
+      uint8_t rm[72] = {0}; uint32_t type = 1, cap = 1;
+      memcpy(rm + 8, &type, 4); memcpy(rm + 16, &cap, 4);
+      memset(rm + 64, 0xa5, 8); ounce = 1;
+      CHECK(get(NULL, rm));
+      uint32_t n, id, value; memcpy(&n, rm + 12, 4);
+      // SDK ExtractSyncpoint(index=0) returns error 4 when count <= index.
+      if (n <= 0) { fprintf(stderr, "NVRM_SYNC_PROBE SDK extraction rejected index 0: count=%u\n", n); return 1; }
+      memcpy(&id, rm + 36, 4); memcpy(&value, rm + 40, 4);
+      CHECK(n == 1 && id == UINT32_MAX && value == 0 && rm_creates == 1);
+      memcpy(&type, rm + 8, 4); CHECK(type == 3);
+      for (int i = 64; i < 72; i++) CHECK(rm[i] == 0xa5);
+      // No inline slot: SDK reports a failure; NVN must propagate it.
+      memset(rm, 0, 64); CHECK(!get(NULL, rm)); CHECK(rm_creates == 1);
+      ounce = 0;
+      printf("NVRM_SYNC_PROBE SDK extraction accepted completed fence\n");
+    }
+
+    return 0;
+}
 int main(void) {
+    if (getenv("S2A_NVRM_SYNC_PROBE")) return sync_object_probe();
+    CHECK(sync_object_probe() == 0);
     NVNdeviceBuilder db = {{0}};
     API(nvnDeviceBuilderSetDefaults)(&db); CHECK(API(nvnDeviceInitialize)(&device, &db));
     nvx_fn nvx = (nvx_fn)load("nvnTextureGetNvRmSurfaceNVX");
@@ -136,27 +168,6 @@ int main(void) {
       uint32_t out[3] = {1, 2, 0xA5A5A5A5u}; CHECK(get(&sy, out));
       CHECK(out[0] == 0xFFFFFFFFu && out[1] == 0); CHECK(out[2] == 0xA5A5A5A5u);   // 只写 8 字节
       printf("%s：通过\n", phase); }
-
-    phase = "Switch 2 NvRmSync: SDK extraction sees one completed fence";
-    {
-      typedef NVNboolean (*get_fn)(const NVNsync *, void *);
-      get_fn get = (get_fn)load("nvnSyncGetNvRmSyncNVX");
-      uint8_t rm[72] = {0}; uint32_t type = 1, cap = 1;
-      memcpy(rm + 8, &type, 4); memcpy(rm + 16, &cap, 4);
-      memset(rm + 64, 0xa5, 8); ounce = 1;
-      CHECK(get(NULL, rm));
-      uint32_t n, id, value; memcpy(&n, rm + 12, 4);
-      // SDK ExtractSyncpoint(index=0) returns error 4 when count <= index.
-      if (n <= 0) { fprintf(stderr, "NVRM_SYNC_PROBE SDK extraction rejected index 0: count=%u\n", n); return 1; }
-      memcpy(&id, rm + 36, 4); memcpy(&value, rm + 40, 4);
-      CHECK(n == 1 && id == UINT32_MAX && value == 0 && rm_creates == 1);
-      memcpy(&type, rm + 8, 4); CHECK(type == 3);
-      for (int i = 64; i < 72; i++) CHECK(rm[i] == 0xa5);
-      // No inline slot: SDK reports a failure; NVN must propagate it.
-      memset(rm, 0, 64); CHECK(!get(NULL, rm)); CHECK(rm_creates == 1);
-      ounce = 0;
-      printf("NVRM_SYNC_PROBE SDK extraction accepted completed fence\n");
-    }
 
     phase = "nvnSyncGetNvRmSyncNVX：GPU 栅栏没完成不导出「已触发」（审计 #1534 P1-47）";
     { typedef NVNboolean (*get_fn)(const NVNsync *, void *); get_fn get = (get_fn)load("nvnSyncGetNvRmSyncNVX");

@@ -1360,7 +1360,21 @@ NVN_NOPROTO(nvnSyncGetNvRmSyncNVX, NVNboolean, const NVNsync *s, void *rm) {
     uint64_t fence = 0; int has = s && sync_published((const sync_t *)s, &fence), ext = 0;
     if (has && !sync_ext_wait((const sync_t *)s, UINT64_MAX, &ext) && ext) { static int n; if (n++ < 4) LOG("【红】 SyncGetNvRmSyncNVX: GL fence not reached (session ending); not exported"); return 0; }
     if (has && fence && !nvn_be_wait(fence, UINT64_MAX)) { static int n; if (n++ < 4) LOG("【红】 SyncGetNvRmSyncNVX: GPU fence %llu not reached (session ending); not exported", (unsigned long long)fence); return 0; }
-    if (rm) { const uint32_t w[2] = {0xFFFFFFFFu, 0}; memcpy(rm, w, sizeof w); }
+    if (rm) {
+        const uint32_t w[2] = {0xFFFFFFFFu, 0};
+        if (nvn2_on()) {
+            // NVN2 takes an NvRmSync object, not the legacy 8-byte NvFence.
+            // Let the guest SDK fill its own vtable, inline records and ownership:
+            // attr+24 selects the existing caller-owned object. CPU/GPU waits above
+            // have already completed; only then may the invalid fence be exported.
+            typedef int (*create_fn)(const uint32_t *, int, const void *, void **);
+            create_fn create = (create_fn)guest_sym("NvRmSyncCreateFromSyncpointsWithAttr");
+            if (!create) { LOG("【红】SyncGetNvRmSyncNVX: SDK NvRmSync constructor missing"); return 0; }
+            uint64_t attr[4] = {0, 0, 0, (uint64_t)(uintptr_t)rm}; void *out = NULL;
+            int rc = create(w, 1, attr, &out);
+            if (rc || out != rm) { LOG("【红】SyncGetNvRmSyncNVX: SDK NvRmSync construction failed (%d)", rc); return 0; }
+        } else memcpy(rm, w, sizeof w);
+    }
     static int once; if (!once++) LOG("[nvn] SyncGetNvRmSyncNVX: first call (fence %llu%s); exported as the invalid syncpoint (already signaled)", (unsigned long long)fence, has ? "" : ", none yet");
     return 1;
 }

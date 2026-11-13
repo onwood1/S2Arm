@@ -141,6 +141,17 @@ static int sp_reached_locked(const cv_sync *h) {
     uint64_t v = g_ctr[id].value;
     return h->mode == 1 ? v >= h->value : (int32_t)((uint32_t)v - (uint32_t)h->value) >= 0;
 }
+// Only the invalid NvRm fence is produced by our CPU-waited NVN export.
+// Never claim that a live NVIDIA syncpoint has completed: there is no mapping
+// from driver syncpoint IDs to the host's counters.
+static cv_sync sp_from_nvrm(uint32_t id, uint32_t value) {
+    if (id != UINT32_MAX) die("Switch 2 视频：未实现 NvRm 同步点 %u（值 %u）到宿主同步句柄的转换", id, value);
+    return (cv_sync){0, 0, 0};
+}
+static cv_sync gs_from_nvrm(const uint32_t *fence) {
+    if (!fence) die("Switch 2 视频：NvRm 栅栏为空");
+    return sp_from_nvrm(fence[0], fence[1]);
+}
 static uint32_t sp_alloc(void) {
     pthread_mutex_lock(&g_sp_mu);
     // 值不清零：旧句柄不会倒退
@@ -1297,6 +1308,8 @@ static const struct { const char *n; void *f; } g_cv_names[] = {
     { "_ZN2nn6syncpt3sdk20CancelSyncPointEventEPNS1_18SyncPointEventTypeE", (void *)sp_cancel },
     { "_ZN2nn6syncpt3sdk25InitializeMultiWaitHolderEPNS_2os19MultiWaitHolderTypeEPNS1_18SyncPointEventTypeE", (void *)sp_holder },
     { "_ZN2nn6syncpt3sdk21TryWaitSyncPointEventEPKNS1_18SyncPointEventTypeE", (void *)sp_trywait },
+    { "_ZN2nn6syncpt3sdk32MakeSyncPointHandleFromNvRmFenceEjj", (void *)sp_from_nvrm },
+    { "_ZN2nn2gs8external32GetNativeSyncHandleFromNvRmFenceERKNS1_12NvRmFenceRecE", (void *)gs_from_nvrm },
     { "_ZN2nn2gs17TryWaitNativeSyncERKNS0_16NativeSyncHandleE", (void *)gs_trywait },
     { "_ZN2nn2gs14WaitNativeSyncERKNS0_16NativeSyncHandleE", (void *)gs_wait },
     { "_ZN2nn2gs19TimedWaitNativeSyncERKNS0_16NativeSyncHandleENS_8TimeSpanE", (void *)gs_timedwait },

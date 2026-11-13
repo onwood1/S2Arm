@@ -503,6 +503,20 @@ int main(int argc, char **argv) {
         CHECK(a == &A && f == &F && rr == &R && na == &A && nu == &U);
         ((void (*)(void))E("_ZN2nn2gs8FinalizeEv"))(); CHECK(!nvn2_gs_booted());
     }
+    // A completed invalid NvRm fence converts to an empty (already reached)
+    // native handle. Live NVIDIA IDs remain unsupported and must abort.
+    {
+        typedef struct { uint32_t id, mode; uint64_t value; } sync_value;
+        const char *mk = "_ZN2nn6syncpt3sdk32MakeSyncPointHandleFromNvRmFenceEjj";
+        const char *ext = "_ZN2nn2gs8external32GetNativeSyncHandleFromNvRmFenceERKNS1_12NvRmFenceRecE";
+        sync_value h = ((sync_value (*)(uint32_t, uint32_t))E(mk))(UINT32_MAX, 0);
+        CHECK(h.id == 0 && h.mode == 0 && h.value == 0);
+        uint32_t f[2] = {UINT32_MAX, 0};
+        h = ((sync_value (*)(const uint32_t *))E(ext))(f);
+        CHECK(h.id == 0 && h.mode == 0 && h.value == 0);
+        CHECK(dies1(E(mk), 7, 42));
+        f[0] = 7; CHECK(dies1(E(ext), (uintptr_t)f, 0));
+    }
     // ---------- 族内宿主做不到的：红桩（装载打红行，调用即中止点名）；族内纯函数 / 数据符号 / 族外：照原路径 ----------
     {
         // 红桩只给有实证的：gs 未启动模拟执行进了 gsv 会话（编码器图像池、别名池、gsv 视频服务会话）或经 syncpt 库表跳空（库表转发、NvRm 栅栏转同步句柄）
@@ -511,10 +525,9 @@ int main(int argc, char **argv) {
             "_ZN2nn5codec31InitializeDecoderAliasImagePoolEPNS0_25VideoDecoderImagePoolTypeENS_2gs17NativeImageHandleEj",
             "_ZN2nn6syncpt3sdk19MakeSyncPointHandleENS1_13SyncCounterIdEmNS1_13SyncValueModeE",
             "_ZN2nn6syncpt3sdk21CreateDebugSyncDeviceEPNS1_19DebugSyncDeviceTypeE",
-            "_ZN2nn2gs8external32GetNativeSyncHandleFromNvRmFenceERKNS1_12NvRmFenceRecE",   // Pokopia subsdk0 导入
             "_ZN2nn5codec5video6detail17ShimLibraryGlobal10InitializeEv",
         };
-        static const char *const why[] = { "编码", "别名", "库表", "调试", "NvRm", "gsv" };
+        static const char *const why[] = { "编码", "别名", "库表", "调试", "gsv" };
         for (unsigned i = 0; i < sizeof red / sizeof *red; i++) { void *f = s2a_codec_entry(red[i]); CHECK(f && nvn2_red_of(f) && strstr(nvn2_red_of(f), why[i])); }
         // 族内没接、但没有原路径必中止实证的：照原路径（H.264 编码器初始化 / 加密输入 / 原生窗口 / nvnSync 由原生同步句柄初始化）
         CHECK(!s2a_codec_entry("_ZN2nn5codec21InitializeH264EncoderEPmPNS0_15H264EncoderTypeEPvmttiNS_5movie11BitRateModeENS4_12EncoderLevelENS0_23VideoEncoderInputFormatE")

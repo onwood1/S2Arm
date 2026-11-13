@@ -3,6 +3,11 @@
 name: H264 codec test and iOS shell
 on:
   workflow_dispatch:
+    inputs:
+      build_shell:
+        description: Build unsigned iOS shell after tests
+        type: boolean
+        default: false
   push:
     branches: [codex/h264-video-decoder]
 permissions:
@@ -47,28 +52,35 @@ jobs:
           cp "$impl" "$RUNNER_TEMP/nvn2_codec.fixed.c"
           trap 'cp "$RUNNER_TEMP/nvn2_codec.fixed.c" "$impl"' EXIT
           git show 61aae40d2e3ead2685f299edd12bc7e266c5a81e:graphics/nvn/gfx/nvn/nvn2_codec.c > "$impl"
+          # Compile through the existing target. Its unrelated timing checks
+          # are not the baseline signal; run the H264-only probe explicitly.
+          gmake native-test-nvn2_codec > build/h264-evidence/baseline-suite.log 2>&1 || true
+          test -x build/tests/t_nvn2_codec
           set +e
-          gmake native-test-nvn2_codec > build/h264-evidence/baseline.log 2>&1
+          S2A_H264_INIT_PROBE=1 build/tests/t_nvn2_codec > build/h264-evidence/baseline.log 2>&1
           rc=$?
           set -e
           cat build/h264-evidence/baseline.log
-          test "$rc" -ne 0
-          grep -q 't_nvn2_codec:.*失败' build/h264-evidence/baseline.log
+          test "$rc" -eq 1
+          grep -q 'H264_INIT_PROBE rejected valid AVC configuration' build/h264-evidence/baseline.log
       - name: Test fixed codec, pixels, timestamps, flush and EOS
         shell: bash
         run: |
           set -o pipefail
           gmake native-test-nvn2_codec 2>&1 | tee build/h264-evidence/fixed.log
+          S2A_H264_INIT_PROBE=1 build/tests/t_nvn2_codec 2>&1 | tee build/h264-evidence/fixed-probe.log
       - name: Verify public source checks
         run: |
           python3 tools/layer_map.py check
           python3 tools/test_wired_lint.py
           python3 tools/public_repo_scan.py --repo . --ref HEAD --path . --format gate
       - name: Prepare iOS dependencies
+        if: github.event_name == 'workflow_dispatch' && inputs.build_shell
         run: |
           python3 runtime/rewriter/prepare_deps.py build/rewriter-deps
           python3 pack/fonts/make_open_fonts.py "$RUNNER_TEMP/openfonts"
       - name: Build unsigned iOS shell from tested source
+        if: github.event_name == 'workflow_dispatch' && inputs.build_shell
         shell: bash
         run: |
           set -o pipefail
@@ -85,6 +97,7 @@ jobs:
             build/cs/*.err
           retention-days: 7
       - name: Upload unsigned shell
+        if: github.event_name == 'workflow_dispatch' && inputs.build_shell
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: H264-Shell

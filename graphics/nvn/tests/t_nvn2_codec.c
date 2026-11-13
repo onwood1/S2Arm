@@ -295,6 +295,14 @@ static int cover(const char *path) {
     fclose(f); return 0;
 }
 int main(int argc, char **argv) {
+    if (getenv("S2A_H264_INIT_PROBE")) {
+        _Alignas(16) uint8_t obj[0x400];
+        Result rc = ((f_h264_init_tm)E(H264.init))(obj, NULL, 0, 0, 64, 64, 0, 0, 2, 0, red_h264_avcc, sizeof red_h264_avcc);
+        if (rc) { fprintf(stderr, "H264_INIT_PROBE rejected valid AVC configuration: 0x%x\n", rc); return 1; }
+        ((f_t)E(H264.fini))(obj);
+        puts("H264_INIT_PROBE accepted valid AVC configuration"); return 0;
+    }
+
     if (argc == 3 && !strcmp(argv[1], "--cover")) return cover(argv[2]);
     // ---------- av1C ----------
     uint8_t c[256];

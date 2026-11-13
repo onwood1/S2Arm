@@ -18,7 +18,7 @@
 //   VP9 默认 libvpx；S2A_VP9_SYSTEM=1（仅 macOS）时整帧改走 VideoToolbox（关键帧解析 → vpcC，420v/420f → I420，失败自动回退 libvpx）
 //   （火纹 82 支片头全是 AV1：2560x1440 78 支、1920x1080 4 支），VideoToolbox 不支持 AV1 的机器（M1 / M2、A16 及更早）用 dav1d 软件解码
 //   （services/dav1d/build.sh，垫片 s2a_av1.c）；S2A_AV1_SOFT=1 强制软解（验收用，缺省关）。确认所有目标机都有 AV1 硬件解码的本地构建可设
-//   S2A_DAV1D=0 不链 dav1d（无硬解时 AV1 初始化报错，不会出假画面）。H.264 宿主还没接：初始化回失败并打红行（游戏的播放库随即中止），
+//   S2A_DAV1D=0 不链 dav1d（无硬解时 AV1 初始化报错，不会出假画面）。H.264 使用 VideoToolbox，接受初始化参数集和码流内的 SPS/PPS；
 //   不出假画面。
 // 原生图像：main 拿帧的原生图像句柄（movie::VideoFrame::GetNativeImageHandle）经 nvnNativeImage* 建 NVN 纹理（火纹 main+0x1900d80：格式 0x38 RGBA8_SRGB）。
 //   宿主把这张图像的内存当成一个 CPU 可写的 NVN 内存池、纹理建成线性（LINEAR，行距 = 图像行距）：Metal 端是池缓冲上的零拷贝线性纹理（nvn_mtl.m tex_linear），
@@ -617,7 +617,9 @@ typedef struct cvdec {
     int vp9_system, vp9_no_vt, vp9_full, vp9_vt_used; uint8_t *vt_u, *vt_v; size_t vt_uv_cap;
     // dav1d 软件解码（AV1 在 VideoToolbox 不支持 / 强制软解时）
     void *av1; int av1_soft;
-    struct { CVPixelBufferRef pb; } vtout[4]; int nvtout;
+    uint8_t *h264_sps, *h264_pps; size_t h264_nsps, h264_npps;
+    int h264_nlen, h264_changed;
+    struct { CVPixelBufferRef pb; int64_t pts_ns; } vtout[32]; int nvtout;
     // 解码耗时（每包：送进解码器到拿到图，不含写进图像）
     uint64_t frames, dec_n, dec_ns, dec_max;
     // 写进图像的耗时（YUV 转 RGBA / 拷 NV12 / 交换 BGRA）
@@ -689,7 +691,11 @@ static void vt_out(void *ref, void *src, OSStatus st, VTDecodeInfoFlags fl, CVIm
     (void)src; (void)fl; (void)pts; (void)dur;
     cvdec *d = ref;
     if (st) { CV_RED(vtst, "Switch 2 视频：VideoToolbox %s 解码出错 %d（只报一次）", cv_name[d->codec], (int)st); return; }
-    if (ib && d->nvtout < 4) d->vtout[d->nvtout++].pb = CVPixelBufferRetain(ib);
+    if (ib && d->nvtout < (int)(sizeof d->vtout / sizeof d->vtout[0])) {
+        int i = d->nvtout++;
+        d->vtout[i].pb = CVPixelBufferRetain(ib);
+        d->vtout[i].pts_ns = CMTIME_IS_NUMERIC(pts) ? CMTimeConvertScale(pts, 1000000000, kCMTimeRoundingMethod_Default).value : 0;
+    } else if (ib) CV_RED(vtqueue, "Switch 2 视频：VideoToolbox 单包输出超出帧队列");
 }
 static int cv_threads(void) { long n = sysconf(_SC_NPROCESSORS_ONLN); return n >= 8 ? 4 : 2; }
 // S2A_AV1_SOFT=1：AV1 强制走 dav1d（有硬件的机器上验收软解用；缺省关）
@@ -822,7 +828,147 @@ static int cv_vp9_vt_decode(cvdec *d, const cv_in *in, int64_t pts, int gen) {
 }
 #endif // TARGET_OS_OSX
 
+// H.264 parameter sets belong to the decoder, not the submitted guest buffer.
+static int cv_h264_set(uint8_t **dst, size_t *dn, const uint8_t *p, size_t n) {
+    if (*dn == n && *dst && !memcmp(*dst, p, n)) return 0;
+    uint8_t *q = malloc(n); if (!q) die("Switch 2 视频：H.264 参数集内存不足");
+    memcpy(q, p, n); free(*dst); *dst = q; *dn = n; return 1;
+}
+static size_t cv_h264_start(const uint8_t *p, size_t n, size_t at, size_t *prefix) {
+    for (size_t i = at; i + 3 <= n; i++) {
+        if (p[i] || p[i + 1]) continue;
+        if (p[i + 2] == 1) { *prefix = 3; return i; }
+        if (i + 4 <= n && !p[i + 2] && p[i + 3] == 1) { *prefix = 4; return i; }
+    }
+    return n;
+}
+static int cv_h264_nal(cvdec *d, const uint8_t *p, size_t n, uint8_t *out, size_t *on, int *vcl) {
+    if (!n || n > UINT32_MAX || (p[0] & 0x80)) return 0;
+    unsigned type = p[0] & 31;
+    if (!type || type >= 24) return 0;
+    if (type == 7) d->h264_changed |= cv_h264_set(&d->h264_sps, &d->h264_nsps, p, n);
+    else if (type == 8) d->h264_changed |= cv_h264_set(&d->h264_pps, &d->h264_npps, p, n);
+    else if (type != 9) {
+        out[(*on)++] = (uint8_t)(n >> 24); out[(*on)++] = (uint8_t)(n >> 16);
+        out[(*on)++] = (uint8_t)(n >> 8); out[(*on)++] = (uint8_t)n;
+        memcpy(out + *on, p, n); *on += n;
+        if (type <= 5) *vcl = 1;
+    }
+    return 1;
+}
+// AVCDecoderConfigurationRecord (avcC), or Annex-B SPS/PPS. Input NAL lengths
+// may be 1/2/4 bytes; samples passed to VideoToolbox always use four bytes.
+static int cv_h264_config(cvdec *d, const uint8_t *p, size_t n) {
+    if (!n) return 1;
+    if (!p) return 0;
+    if (n >= 7 && p[0] == 1) {
+        int nl = (p[4] & 3) + 1; if (nl == 3) return 0;
+        size_t at = 6; unsigned count = p[5] & 31;
+        if (!count) return 0;
+        for (int kind = 0; kind < 2; kind++) {
+            for (unsigned i = 0; i < count; i++) {
+                if (at + 2 > n) return 0;
+                size_t len = (size_t)p[at] << 8 | p[at + 1]; at += 2;
+                if (!len || len > n - at || (p[at] & 31) != (kind ? 8 : 7)) return 0;
+                // A configuration can contain multiple sets; retain the first pair.
+                if (!i) d->h264_changed |= kind ? cv_h264_set(&d->h264_pps, &d->h264_npps, p + at, len) : cv_h264_set(&d->h264_sps, &d->h264_nsps, p + at, len);
+                at += len;
+            }
+            if (!kind) { if (at >= n) return 0; count = p[at++]; if (!count) return 0; }
+        }
+        d->h264_nlen = nl; return 1;
+    }
+    size_t pre = 0, at = cv_h264_start(p, n, 0, &pre);
+    if (at > 3 || at == n) return 0;
+    while (at < n) {
+        size_t begin = at + pre, next_pre = 0, end = cv_h264_start(p, n, begin, &next_pre);
+        size_t len = end - begin; while (len && !p[begin + len - 1]) len--;
+        if (!len) return 0;
+        unsigned type = p[begin] & 31;
+        if (type == 7) d->h264_changed |= cv_h264_set(&d->h264_sps, &d->h264_nsps, p + begin, len);
+        else if (type == 8) d->h264_changed |= cv_h264_set(&d->h264_pps, &d->h264_npps, p + begin, len);
+        else return 0;
+        at = end; pre = next_pre;
+    }
+    return d->h264_nsps && d->h264_npps;
+}
+static int cv_h264_open(cvdec *d) {
+    if (!d->h264_nsps || !d->h264_npps) return 0;
+    if (d->vt && !d->h264_changed) return 1;
+    cv_vt_drop(d);
+    const uint8_t *sets[] = { d->h264_sps, d->h264_pps };
+    size_t sizes[] = { d->h264_nsps, d->h264_npps };
+    OSStatus st = CMVideoFormatDescriptionCreateFromH264ParameterSets(NULL, 2, sets, sizes, 4, &d->vtfmt);
+    if (st) { LOG("【红】Switch 2 视频：H.264 参数集无效（%d）", (int)st); return -1; }
+    int32_t pf = d->vt_nv12 ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA;
+    CFNumberRef pfn = CFNumberCreate(NULL, kCFNumberSInt32Type, &pf);
+    const void *keys[] = { kCVPixelBufferPixelFormatTypeKey }, *values[] = { pfn };
+    CFDictionaryRef attrs = CFDictionaryCreate(NULL, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    VTDecompressionOutputCallbackRecord cb = { vt_out, d };
+    st = VTDecompressionSessionCreate(NULL, d->vtfmt, NULL, attrs, &cb, &d->vt);
+    CFRelease(attrs); CFRelease(pfn);
+    if (st) { cv_vt_drop(d); LOG("【红】Switch 2 视频：H.264 VideoToolbox 会话建不出（%d）", (int)st); return -1; }
+    d->h264_changed = 0;
+    LOG("Switch 2 视频：H.264 %dx%d 走 VideoToolbox（输出 %s）", d->w, d->h, d->vt_nv12 ? "NV12" : "BGRA→RGBA");
+    return 1;
+}
+static void cv_h264_decode(cvdec *d, const cv_in *in, int gen) {
+    uint64_t t0 = now_ns(); uint8_t *sample = NULL; size_t sn = 0; int vcl = 0, valid = 1;
+    if (in->n) {
+        if (in->n > (SIZE_MAX - 4) / 3) die("Switch 2 视频：H.264 输入太大");
+        sample = malloc(in->n * 3 + 4); if (!sample) die("Switch 2 视频：H.264 样本内存不足");
+        size_t pre = 0, at = cv_h264_start(in->p, in->n, 0, &pre);
+        if (!d->h264_nlen && at <= 3 && at < in->n) {
+            while (at < in->n && valid) {
+                size_t begin = at + pre, next_pre = 0, end = cv_h264_start(in->p, in->n, begin, &next_pre);
+                size_t len = end - begin; while (len && !in->p[begin + len - 1]) len--;
+                valid = cv_h264_nal(d, in->p + begin, len, sample, &sn, &vcl); at = end; pre = next_pre;
+            }
+        } else {
+            unsigned nl = d->h264_nlen ? d->h264_nlen : 4; at = 0;
+            while (at < in->n && valid) {
+                if (nl > in->n - at) { valid = 0; break; }
+                size_t len = 0; for (unsigned j = 0; j < nl; j++) len = len << 8 | in->p[at++];
+                if (!len || len > in->n - at) { valid = 0; break; }
+                valid = cv_h264_nal(d, in->p + at, len, sample, &sn, &vcl); at += len;
+            }
+        }
+        if (!valid) CV_RED(h264packet, "Switch 2 视频：H.264 NAL 数据无效（%zu 字节），这一包没有画面", in->n);
+    }
+    if (valid && vcl) {
+        int open = cv_h264_open(d);
+        if (!open) CV_RED(h264sets, "Switch 2 视频：H.264 还没有 SPS/PPS，等下一包");
+        if (open > 0) {
+            CMBlockBufferRef bb = NULL; CMSampleBufferRef sb = NULL;
+            OSStatus st = CMBlockBufferCreateWithMemoryBlock(NULL, sample, sn, kCFAllocatorMalloc, NULL, 0, sn, 0, &bb);
+            if (!st) {
+                sample = NULL; size_t size = sn;
+                CMSampleTimingInfo ti = { kCMTimeInvalid, CMTimeMake(in->pts_ns / 1000, 1000000), kCMTimeInvalid };
+                st = CMSampleBufferCreateReady(NULL, bb, d->vtfmt, 1, 1, &ti, 1, &size, &sb);
+            }
+            if (!st) st = VTDecompressionSessionDecodeFrame(d->vt, sb, 0, NULL, NULL);
+            if (sb) CFRelease(sb); if (bb) CFRelease(bb);
+            if (st) CV_RED(h264decode, "Switch 2 视频：H.264 解码失败（%d，%zu 字节）", (int)st, in->n);
+        }
+    }
+    free(sample);
+    if (d->vt) {
+        if (in->eos) VTDecompressionSessionFinishDelayedFrames(d->vt);
+        VTDecompressionSessionWaitForAsynchronousFrames(d->vt);
+    }
+    dec_time(d, t0);
+    for (int i = 0; i < d->nvtout; i++) {
+        CVPixelBufferRef pb = d->vtout[i].pb;
+        int ok = cv_emit(d, wr_pb, pb, (uint16_t)CVPixelBufferGetWidth(pb), (uint16_t)CVPixelBufferGetHeight(pb), d->vtout[i].pts_ns, 0, gen);
+        CVPixelBufferRelease(pb);
+        if (!ok) { for (int j = i + 1; j < d->nvtout; j++) CVPixelBufferRelease(d->vtout[j].pb); d->nvtout = 0; return; }
+    }
+    d->nvtout = 0;
+    if (in->eos) cv_emit(d, NULL, NULL, (uint16_t)d->w, (uint16_t)d->h, in->pts_ns / 1000 * 1000, 1, gen);
+}
+
 static void cv_decode(cvdec *d, const cv_in *in, int gen) {
+    if (d->codec == CV_H264) { cv_h264_decode(d, in, gen); return; }
     // SDK 按微秒发（sdk+0x336260），按 微秒 × 1000 报
     int64_t pts = in->pts_ns / 1000 * 1000;
     int vt_handled = 0;
@@ -918,8 +1064,7 @@ static void cv_drop_inputs(cvdec *d) { while (d->qn) { free(d->q[d->qh].p); d->q
 
 static Result cv_init(void *t, int codec, uint32_t w, uint32_t h) {
     w &= 0xffff; h &= 0xffff;
-    // H.264 宿主还没接（VideoToolbox 的 H.264 每台苹果设备都有，接上就是硬件解码）：不出假画面，初始化直接失败，游戏的播放库随即中止
-    if (codec == CV_H264) { LOG("【红】Switch 2 视频：H.264 解码器（%ux%u）宿主还没接：初始化回失败", w, h); return RES_FAIL; }
+    // H.264 的 VideoToolbox 会话在参数集齐备后由解码线程建立。
     cvdec *d = calloc(1, sizeof *d); if (!d) die("Switch 2 视频：内存不足");
     d->guest = t; d->codec = codec; d->w = (int)w; d->h = (int)h; d->last = -1;
 #if TARGET_OS_OSX
@@ -947,7 +1092,7 @@ static void cv_fini(void *t) {
     pthread_mutex_lock(&g_dec_mu); for (int i = 0; i < 64; i++) if (g_dec[i] == d) g_dec[i] = NULL; pthread_mutex_unlock(&g_dec_mu);
     pthread_mutex_lock(&d->mu); d->quit = 1; pthread_cond_broadcast(&d->cv); pthread_mutex_unlock(&d->mu);
     DM_BLOCK_BEGIN(); pthread_join(d->th, NULL); DM_BLOCK_END();
-    cv_reset_codec(d); cv_drop_inputs(d); free(d->q); free(d->vt_u); free(d->vt_v);
+    cv_reset_codec(d); cv_drop_inputs(d); free(d->q); free(d->vt_u); free(d->vt_v); free(d->h264_sps); free(d->h264_pps);
     sp_free(d->ctr);
     static void (*destroy)(void *);
     if (!destroy) destroy = (void (*)(void *))gsym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
@@ -956,7 +1101,7 @@ static void cv_fini(void *t) {
     s2a_event_release(d->ready_ev);
     LOG("Switch 2 视频：%s 解码器结束，出帧 %llu；解码 %llu 包，每包平均 %.2f ms、最长 %.2f ms；写进图像每帧平均 %.2f ms（%s）", cv_name[d->codec], (unsigned long long)d->frames, (unsigned long long)d->dec_n,
         d->dec_n ? d->dec_ns / 1e6 / (double)d->dec_n : 0.0, d->dec_max / 1e6, d->wr_n ? d->wr_ns / 1e6 / (double)d->wr_n : 0.0,
-        d->codec == CV_AV1 ? (d->av1_soft ? "dav1d 软件解码" : "VideoToolbox") : d->codec == CV_VP9 && d->vp9_vt_used && !d->vp9_no_vt ? "VideoToolbox" : "libvpx");
+        d->codec == CV_H264 ? "VideoToolbox" : d->codec == CV_AV1 ? (d->av1_soft ? "dav1d 软件解码" : "VideoToolbox") : d->codec == CV_VP9 && d->vp9_vt_used && !d->vp9_no_vt ? "VideoToolbox" : "libvpx");
     pthread_mutex_destroy(&d->mu); pthread_cond_destroy(&d->cv); free(d);
 }
 // 持 mu：登记 / 释放的缓冲拿下一个句柄，进两条次序
@@ -1066,8 +1211,25 @@ static Result h_flushr(void *t) { return cv_flush(t, 0); }
 CV_INITS(vp9, CV_VP9)
 CV_INITS(vp8, CV_VP8)
 CV_INITS(av1, CV_AV1)
-// H.264 的初始化多带参数集（指针、长度）在栈上，宿主不用
-CV_INITS(h264, CV_H264)
+// H.264 新旧 ABI 的参数集位置不同，不能把不带 mode 的接口直接接到新版。
+static Result cv_init_h264(void *t, uint32_t w, uint32_t h, const void *sets, uint64_t n) {
+    Result r = cv_init(t, CV_H264, w, h); if (r) return r;
+    if (cv_h264_config(cv_of(t), sets, (size_t)n)) return RES_OK;
+    LOG("【红】Switch 2 视频：H.264 初始化参数集格式无效（%llu 字节）", (unsigned long long)n);
+    cv_fini(t); return RES_FAIL;
+}
+static Result h_init_tm_h264(void *t, void *work, uint64_t wn, uint64_t a, uint32_t w, uint32_t h, uint32_t rate, uint32_t in, uint64_t out, uint64_t mode, const void *sets, uint64_t n) {
+    (void)work; (void)wn; (void)a; (void)rate; (void)in; (void)out; (void)mode; return cv_init_h264(t, w, h, sets, n);
+}
+static Result h_init_rm_h264(void *t, uint64_t a, uint32_t w, uint32_t h, uint32_t rate, uint32_t in, uint32_t out, uint32_t mode, const void *sets, uint64_t n) {
+    (void)a; (void)rate; (void)in; (void)out; (void)mode; return cv_init_h264(t, w, h, sets, n);
+}
+static Result h_init_tm_h264_old(void *t, void *work, uint64_t wn, uint64_t a, uint32_t w, uint32_t h, uint32_t rate, uint32_t in, uint64_t out, const void *sets, uint64_t n) {
+    return h_init_tm_h264(t, work, wn, a, w, h, rate, in, out, 0, sets, n);
+}
+static Result h_init_rm_h264_old(void *t, uint64_t a, uint32_t w, uint32_t h, uint32_t rate, uint32_t in, uint32_t out, const void *sets, uint64_t n) {
+    return h_init_rm_h264(t, a, w, h, rate, in, out, 0, sets, n);
+}
 
 static const struct { const char *n; void *f; } g_cv_names[] = {
     { "_ZN2nn5codec5video10InitializeEv", (void *)(uintptr_t)0 },
@@ -1104,8 +1266,8 @@ static const struct { const char *n; void *f; } g_cv_names[] = {
     CV_SET_OLD("Vp9", vp9)
     CV_SET_OLD("Vp8", vp8)
     CV_SET_OLD("Av1", av1)
-    { "_ZN2nn5codec21InitializeH264DecoderEPNS0_15H264DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatEPKvm", (void *)h_init_tm_h264 },
-    { "_ZN2nn5codec21InitializeH264DecoderEPNS0_15H264DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatEPKvm", (void *)h_init_rm_h264 },
+    { "_ZN2nn5codec21InitializeH264DecoderEPNS0_15H264DecoderTypeEPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatEPKvm", (void *)h_init_tm_h264_old },
+    { "_ZN2nn5codec21InitializeH264DecoderEPNS0_15H264DecoderTypeEmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatEPKvm", (void *)h_init_rm_h264_old },
     { "_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEjNS0_9CodecModeE", (void *)cv_pool_init },
     { "_ZN2nn5codec34GetH264DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_15H264DecoderTypeE", (void *)h_ready_old },
     { "_ZN2nn5codec30CalculateH264DecoderWorkBufferEPmS1_mtt", (void *)h_work_size },

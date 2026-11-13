@@ -12,7 +12,7 @@
 //     ts_av1 = ffmpeg -f lavfi -i testsrc2=size=96x64:rate=30 -frames:v 6 -pix_fmt yuv420p -c:v libsvtav1 -crf 30 -preset 8 -g 6 -f ivf，
 //     red10_av1 = 上面那份红色原始 YUV 的 10 位版（Y 324、U 360、V 960）-pix_fmt yuv420p10le -c:v libsvtav1 -crf 10；
 //     经整条接管路径（强制软解）出的像素：8 位、10 位都按上面手算的 (254, 0, 0, 255)，有损 ±3。
-//   - H.264 宿主没接：初始化回失败（不出假画面）。
+//   - H.264：真实合成码流通过初始化、提交、取帧、时间戳与像素检查。
 //   - 同步句柄：模式 1 比 64 位、其它 32 位回绕比；全 0 句柄算达到。
 // 可选参数 <时间单元文件> <av1C 文件>：再核一对真片子的数据（一次性核对用，不进门禁）
 #include <stdio.h>
@@ -107,6 +107,7 @@ typedef Result (*f_psize)(uint64_t *, uint64_t *, const uint32_t *, uint32_t);
 typedef Result (*f_pinit)(void *, void *, uint64_t, const uint32_t *, uint32_t);
 typedef void (*f_pfini)(void *);
 typedef uint32_t (*f_phandle)(const void *, uint32_t);
+typedef Result (*f_h264_init_tm)(void *, void *, uint64_t, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t, uint64_t, const void *, uint64_t);
 typedef Result (*f_init_tm)(void *, void *, uint64_t, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint64_t, uint64_t);
 typedef Result (*f_t)(void *);
 typedef void (*f_v)(void *);
@@ -150,11 +151,21 @@ static const uint8_t red_vp9_0[] = {0x82, 0x49, 0x83, 0x42, 0x00, 0x03, 0xf0, 0x
 static const uint8_t red_vp9_1[] = {0x86, 0x00, 0x40, 0x92, 0x9c, 0x00, 0x40, 0x00, 0x00, 0x02, 0x00, 0x00, 0x54, 0x70};
 static const uint8_t red_av1_0[] = {0x12, 0x00, 0x0a, 0x0b, 0x02, 0x00, 0x00, 0x05, 0x55, 0x7f, 0xfc, 0x6a, 0xf9, 0x80, 0x40, 0x32, 0x17, 0x10, 0x00, 0x88, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x04, 0x90, 0x1c, 0xa6, 0x3c, 0xff, 0x00, 0x57, 0x0b, 0x7f, 0x53, 0x48};
 static const uint8_t red_av1_1[] = {0x12, 0x00, 0x32, 0x11, 0x30, 0x02, 0x00, 0x00, 0x00, 0x00, 0x7a, 0x50, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x9c, 0x50};
+
+// Synthetic 64x64 red YUV420P (81,90,240), libx264 baseline, 2 frames.
+// Independent ffmpeg decode: RGBA (253,0,0,255), tolerate 3 for color conversion.
+static const uint8_t red_h264_0[] = {0x00,0x00,0x00,0x01,0x09,0x10,0x00,0x00,0x00,0x01,0x67,0x42,0xc0,0x0a,0xd9,0x84,0x26,0x84,0x00,0x00,0x03,0x00,0x04,0x00,0x00,0x03,0x00,0xf0,0x3c,0x48,0x99,0xa0,0x00,0x00,0x00,0x01,0x68,0xc9,0x60,0x10,0xcb,0x20,0x00,0x00,0x00,0x01,0x65,0x88,0x84,0x0a,0xf1,0x18,0xa0,0x00,0x32,0x8b,0x1c,0x00,0x04,0xe8,0x63,0x80,0x00,0xd8,0x34,0x9c,0x9c,0x9d,0x75,0xd7,0x5d,0x75,0xd7,0x5d,0x75,0xd7,0x5e};
+static const uint8_t red_h264_1[] = {0x00,0x00,0x00,0x01,0x09,0x30,0x00,0x00,0x00,0x01,0x41,0x9a,0x38,0x13,0xe1,0x18};
+
+static const uint8_t red_h264_avcc[] = {0x01,0x42,0xc0,0x0a,0xff,0xe1,0x00,0x16,0x67,0x42,0xc0,0x0a,0xd9,0x84,0x26,0x84,0x00,0x00,0x03,0x00,0x04,0x00,0x00,0x03,0x00,0xf0,0x3c,0x48,0x99,0xa0,0x01,0x00,0x06,0x68,0xc9,0x60,0x10,0xcb,0x20};
+static const uint8_t red_h264_avcc_0[] = {0x00,0x00,0x00,0x1f,0x65,0x88,0x84,0x0a,0xf1,0x18,0xa0,0x00,0x32,0x8b,0x1c,0x00,0x04,0xe8,0x63,0x80,0x00,0xd8,0x34,0x9c,0x9c,0x9d,0x75,0xd7,0x5d,0x75,0xd7,0x5d,0x75,0xd7,0x5e};
+static const uint8_t red_h264_avcc_1[] = {0x00,0x00,0x00,0x06,0x41,0x9a,0x38,0x13,0xe1,0x18};
+
 static const uint8_t av1c_want[] = {0x81, 0x00, 0x0c, 0x00, 0x0a, 0x0b, 0x02, 0x00, 0x00, 0x05, 0x55, 0x7f, 0xfc, 0x6a, 0xf9, 0x80, 0x40};
 
 // 一个解码器 + 2 张图像（各一个池，同火纹 subsdk2+0xf7a8 每池 1 张），偏好 = 图块模式 2、输出格式 2（布局码 5，RGBA）
 typedef struct { _Alignas(16) uint8_t obj[0x400]; _Alignas(16) uint8_t pool[2][0x20]; uint8_t *mem[2]; uint64_t size; } rig;
-static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) {
+static void rig_up_config(rig *r, const struct codec *c, uint32_t w, uint32_t h, const void *sets, size_t nsets) {
     memset(r, 0, sizeof *r);
     uint32_t pref[16] = {0, 5, (w - 1) | (h - 1) << 16};
     uint64_t align = 0;
@@ -163,12 +174,14 @@ static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) {
         CHECK(!posix_memalign((void **)&r->mem[i], (size_t)align, (size_t)r->size)); memset(r->mem[i], 0xcd, (size_t)r->size);
         CHECK(((f_pinit)E(POOL_INIT))(r->pool[i], r->mem[i], r->size, pref, 1) == 0);
     }
-    CHECK(((f_init_tm)E(c->init))(r->obj, NULL, 0, 0, w, h, 0, 0, 2, 0) == 0);
+    if (c == &H264) CHECK(((f_h264_init_tm)E(c->init))(r->obj, NULL, 0, 0, w, h, 0, 0, 2, 0, sets, nsets) == 0);
+    else CHECK(((f_init_tm)E(c->init))(r->obj, NULL, 0, 0, w, h, 0, 0, 2, 0) == 0);
     for (uint32_t i = 0; i < 2; i++) CHECK(((f_reg)E(c->reg))(r->obj, i, r->pool[i], 0) == 0);
     CHECK(((f_reg)E(c->reg))(r->obj, 0, r->pool[0], 0) != 0);
     CHECK(((f_t)E(c->start))(r->obj) == 0);
     CHECK(((f_ev)E(c->ready))(r->obj) == r->obj + 8);
 }
+static void rig_up(rig *r, const struct codec *c, uint32_t w, uint32_t h) { rig_up_config(r, c, w, h, NULL, 0); }
 static void rig_down(rig *r, const struct codec *c) {
     int d0 = g_destroys;
     ((f_t)E(c->fini))(r->obj);
@@ -341,7 +354,7 @@ int main(int argc, char **argv) {
             {"_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEjNS0_9CodecModeE",
              "_ZN2nn5codec26InitializeDecoderImagePoolEPNS0_25VideoDecoderImagePoolTypeEPvmRKNS0_27VideoDecoderImagePreferenceEj"},
         };
-        for (unsigned i = 0; i < sizeof pairs / sizeof *pairs; i++) { void *o = s2a_codec_entry(pairs[i][0]); CHECK(o && o == s2a_codec_entry(pairs[i][1])); }
+        for (unsigned i = 0; i < sizeof pairs / sizeof *pairs; i++) { void *o = s2a_codec_entry(pairs[i][0]); CHECK(o); if (!strstr(pairs[i][0], "H264")) CHECK(o == s2a_codec_entry(pairs[i][1])); }
         // 旧版可提交事件：出参写回对象 +8（新版返回值同一处）；工作缓冲大小 4 KB / 4 KB 对齐
         _Alignas(16) uint8_t obj[64]; void *ev = NULL;
         Result (*ro)(void **, void *) = (Result (*)(void **, void *))s2a_codec_entry("_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Vp9DecoderTypeE");
@@ -514,8 +527,46 @@ int main(int argc, char **argv) {
 
     // ---------- H.264 宿主没接：初始化回失败 ----------
     {
-        _Alignas(16) uint8_t obj[0x400];
-        CHECK(((f_init_tm)E(H264.init))(obj, NULL, 0, 0, 32, 16, 0, 0, 2, 0) != 0);
+        rig r; rig_up(&r, &H264, 64, 64);
+        uint64_t id;
+        CHECK(((f_sub)E(H264.sub))(&id, r.obj, red_h264_0, sizeof red_h264_0, 33333000, 0) == 0);
+        CHECK(((f_sub)E(H264.sub))(&id, r.obj, red_h264_1, sizeof red_h264_1, 66666000, 0) == 0);
+        for (int i = 0; i < 2; i++) {
+            sync_h sh; uint32_t b = take(&r, &H264, &spev, &sh);
+            uint8_t rgba[4]; px(&r, b, rgba);
+            CHECK(abs((int)rgba[0] - 253) <= 3 && rgba[1] <= 3 && rgba[2] <= 3 && rgba[3] == 255);
+            uint16_t w, h, w2, h2; int64_t pts; uint8_t eos;
+            CHECK(((f_props)E(H264.props))(&w, &h, &w2, &h2, &pts, &eos, r.obj, b) == 0);
+            CHECK(w == 64 && h == 64 && pts == (i ? 66666000 : 33333000) && !eos);
+            ((f_rel)E(H264.rel))(r.obj, b, 0, 0);
+        }
+        rig_down(&r, &H264);
+    }
+
+    // avcC supplied only at initialization; samples contain no SPS/PPS.
+    // Mutating the caller buffer checks ownership; Flush checks retained config.
+    {
+        uint8_t config[sizeof red_h264_avcc]; memcpy(config, red_h264_avcc, sizeof config);
+        rig r; rig_up_config(&r, &H264, 64, 64, config, sizeof config); memset(config, 0, sizeof config);
+        uint64_t id;
+        for (int round = 0; round < 2; round++) {
+            if (round) CHECK(((f_t)E("_ZN2nn5codec16FlushH264DecoderEPNS0_15H264DecoderTypeE"))(r.obj) == 0);
+            CHECK(((f_sub)E(H264.sub))(&id, r.obj, red_h264_avcc_0, sizeof red_h264_avcc_0, 100000000, 0) == 0);
+            CHECK(((f_sub)E(H264.sub))(&id, r.obj, red_h264_avcc_1, sizeof red_h264_avcc_1, 133333000, 0) == 0);
+            for (int i = 0; i < 2; i++) {
+                sync_h sh; uint32_t b = take(&r, &H264, &spev, &sh); uint8_t rgba[4]; px(&r, b, rgba);
+                CHECK(abs((int)rgba[0] - 253) <= 3 && rgba[1] <= 3 && rgba[2] <= 3 && rgba[3] == 255);
+                uint16_t w, h, w2, h2; int64_t pts; uint8_t eos;
+                CHECK(((f_props)E(H264.props))(&w, &h, &w2, &h2, &pts, &eos, r.obj, b) == 0 && pts == (i ? 133333000 : 100000000) && !eos);
+                ((f_rel)E(H264.rel))(r.obj, b, 0, 0);
+            }
+        }
+        CHECK(((f_sub)E(H264.sub))(&id, r.obj, NULL, 0, 166666000, 1) == 0);
+        sync_h sh; uint32_t b = take(&r, &H264, &spev, &sh); uint16_t w, h, w2, h2; int64_t pts; uint8_t eos;
+        CHECK(((f_props)E(H264.props))(&w, &h, &w2, &h2, &pts, &eos, r.obj, b) == 0 && eos && pts == 166666000);
+        ((f_rel)E(H264.rel))(r.obj, b, 0, 0); rig_down(&r, &H264);
+        _Alignas(16) uint8_t bad[0x400];
+        CHECK(((f_h264_init_tm)E(H264.init))(bad, NULL, 0, 0, 64, 64, 0, 0, 2, 0, red_h264_avcc, 6) != 0);
     }
 
     // ---------- dav1d 垫片：逐帧 MD5 对 ffmpeg（libdav1d）参考 ----------

@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 S2Arm contributors
+name: H264 codec test and iOS shell
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/h264-video-decoder]
+permissions:
+  contents: read
+concurrency:
+  group: h264-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test-build:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    env:
+      S2A_JOBS: '2'
+      S2A_CS: '0'
+      S2A_PY: python3
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        with:
+          global-json-file: compat/tree/global.json
+      - name: Prepare public build dependencies
+        run: |
+          brew install bash make coreutils meson ninja pkg-config cmake
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "$pythonLocation/bin" >> "$GITHUB_PATH"
+          python3 -m pip install -r tools/rewriter-requirements.txt -r pack/fonts/requirements.txt
+          mkdir -p build/h264-evidence
+          xcodebuild -version | tee build/h264-evidence/toolchain.txt
+          xcrun --sdk iphoneos --show-sdk-version | tee -a build/h264-evidence/toolchain.txt
+      - name: Verify regression fails without implementation
+        shell: bash
+        run: |
+          impl=graphics/nvn/gfx/nvn/nvn2_codec.c
+          cp "$impl" "$RUNNER_TEMP/nvn2_codec.fixed.c"
+          trap 'cp "$RUNNER_TEMP/nvn2_codec.fixed.c" "$impl"' EXIT
+          git show 61aae40d2e3ead2685f299edd12bc7e266c5a81e:graphics/nvn/gfx/nvn/nvn2_codec.c > "$impl"
+          set +e
+          gmake native-test-nvn2_codec > build/h264-evidence/baseline.log 2>&1
+          rc=$?
+          set -e
+          cat build/h264-evidence/baseline.log
+          test "$rc" -ne 0
+          grep -q 't_nvn2_codec:.*失败' build/h264-evidence/baseline.log
+      - name: Test fixed codec, pixels, timestamps, flush and EOS
+        shell: bash
+        run: |
+          set -o pipefail
+          gmake native-test-nvn2_codec 2>&1 | tee build/h264-evidence/fixed.log
+      - name: Verify public source checks
+        run: |
+          python3 tools/layer_map.py check
+          python3 tools/test_wired_lint.py
+          python3 tools/public_repo_scan.py --repo . --ref HEAD --path . --format gate
+      - name: Prepare iOS dependencies
+        run: |
+          python3 runtime/rewriter/prepare_deps.py build/rewriter-deps
+          python3 pack/fonts/make_open_fonts.py "$RUNNER_TEMP/openfonts"
+      - name: Build unsigned iOS shell from tested source
+        shell: bash
+        run: |
+          set -o pipefail
+          S2A_CS=1 bash pack/shell_build.sh "$RUNNER_TEMP/H264-Shell" 2>&1 | tee build/h264-evidence/ios-build.log
+          tar -czf build/H264-Shell.tar.gz -C "$RUNNER_TEMP" H264-Shell
+          shasum -a 256 build/H264-Shell.tar.gz | tee build/h264-evidence/artifact.sha256
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: h264-build-evidence
+          path: |
+            build/h264-evidence
+            build/cs/*.err
+          retention-days: 7
+      - name: Upload unsigned shell
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: H264-Shell
+          path: build/H264-Shell.tar.gz
+          retention-days: 7
+          if-no-files-found: error

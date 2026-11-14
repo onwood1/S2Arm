@@ -555,6 +555,12 @@ namespace Ryujinx.Graphics.Shader
         {
         }
 
+        // Preserve the constant bank for bindless handles as well as bound slots.
+        void RecordTexelFetch1D(int handle, int cbufSlot)
+        {
+            RecordTexelFetch1D(handle);
+        }
+
         /// <summary>
         /// S2A：只问贴图是不是贴图缓冲（TEX / TLDS 一维时区分「一维贴图」与「贴图缓冲」，翻出的代码只取决于这一位）。
         /// 与 <see cref="QuerySamplerType"/> 分开记，匹配时只比「是不是缓冲」——出包离线烘焙按缺省类型翻，运行时别的非缓冲类型不该被拒（10-22 暗黑2 27 个「贴图类型」误拒）

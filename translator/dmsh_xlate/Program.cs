@@ -128,6 +128,12 @@ static class SwshXlate
         // which only the bound descriptor tells (res "fetch1d"; dmsh_build.py flags their bindings, and the host binds a texture buffer there as 16384-texel rows, nvn_mtl.m tbuf_as_2d)
         public readonly SortedSet<int> Fetch1D = new();
         public void RecordTexelFetch1D(int handle) { int slot = Slot(handle, -1, false); if (slot >= 0) Fetch1D.Add(slot); }
+        public readonly SortedSet<string> Fetch1DUbo = new(StringComparer.Ordinal);
+        public void RecordTexelFetch1D(int handle, int cbufSlot)
+        {
+            RecordTexelFetch1D(handle);
+            if (cbufSlot >= 0) Fetch1DUbo.Add($"cb{cbufSlot}_{handle:X}");
+        }
         public TextureFormat QueryTextureFormat(int handle, int cbufSlot = -1)
         {
             int slot = Slot(handle, cbufSlot, true);
@@ -352,7 +358,7 @@ static class SwshXlate
                 FetchScales(p, res);
                 var resolutionReasons = new List<string>(acc.MissingResolutionFacts);
                 foreach (JsonNode reason in res["resolution_scale_reasons"].AsArray()) resolutionReasons.Add((string)reason);
-                if (acc.Fetch1D.Count != 0) resolutionReasons.Add("unsupported_scaled_access:wrapped_1d_fetch");
+                if (acc.Fetch1D.Count != 0 || acc.Fetch1DUbo.Count != 0) resolutionReasons.Add("unsupported_scaled_access:wrapped_1d_fetch");
                 if ((string)job["stage"] == "gs" || geometry) resolutionReasons.Add("unsupported_scaled_access:geometry_stage");
                 if ((string)job["stage"] is "hs" or "ds") resolutionReasons.Add("unsupported_scaled_access:tessellation_stage");
                 SetResolutionMetadata(res, resolutionReasons);
@@ -361,6 +367,7 @@ static class SwshXlate
                     foreach (var t in list) res[name].AsArray().Add(new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
                 // 不用 Add<int>：玩家包宿主（NativeAOT）关了反射式 JSON，没有 int 的类型信息（同 GeometryOutOffsets；11-02 疯狂兔子兜底现编整批 NotSupportedException）
                 if (acc.Fetch1D.Count > 0) { var f1 = new JsonArray(); foreach (int h in acc.Fetch1D) f1.Add(JsonValue.Create(h)); res["fetch1d"] = f1; }
+                if (acc.Fetch1DUbo.Count > 0) { var fu = new JsonArray(); foreach (string h in acc.Fetch1DUbo) fu.Add(JsonValue.Create(h)); res["fetch1d_ubo"] = fu; }
                 // Ampere's wrapped fetch takes its row width and count from the bound 2D form and reads 0 past W * H (InstEmitAmpereMem.cs, 11-04): the host binds a texture buffer there as exact rows
                 //   (W * H = element count, W a power of two when H > 1; nvn_mtl.m tbuf_as_2d). Maxwell's wrapped fetch keeps the fixed 16384-texel rows
                 if (acc.Fetch1D.Count > 0 && (string)job["arch"] == "sm86") res["fetch1d_exact"] = true;

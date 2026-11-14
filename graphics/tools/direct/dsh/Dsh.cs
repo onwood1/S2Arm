@@ -458,6 +458,13 @@ namespace S2A.Dsh
                 if (spill != 0) { refl["spill"] = (long)spill; refl["spill_slot"] = (long)SPILL_SLOT; }
                 refl["c1"] = Convert.ToHexStringLower(c1); refl["notes"] = notes; refl["drv_reads"] = dr; refl["drv_unfillable"] = Unfillable(dr);
                 var binds = Reflect(stage, src, res);
+                var raw1d = DshRaw1D.Build(Key, binds, res);
+                full = DshRaw1D.Rewrite(full, raw1d);
+                Save(Key + "_b.metal", full);
+                if (PackOut && (lay != null || fu != null)) Save(Key + "_b.plain.metal", DshRaw1D.Rewrite(DshFlat.GiantFix(plain).Item1, raw1d));
+                // A newly translated source must not load an older optional offline binary.
+                string staleBinary = Path.Combine(Out, Key + "_b.metallib");
+                if (File.Exists(staleBinary)) File.Delete(staleBinary);
                 refl["bindings"] = binds;
                 if (first.Count > 0)   // 宿主在派发前按序写这些字（上游参考实现（MIT）反射 first_store：reg = 存储缓冲槽，即该成员 sbuf 绑定的 index）
                     refl["first_store"] = first.Select(f => (object)new PyDict { ["reg"] = binds.OfType<PyDict>().FirstOrDefault(b => (string)b["msl_name"] == f.Name && (string)b["kind"] == "sbuf")?["index"]

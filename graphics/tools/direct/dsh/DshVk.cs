@@ -369,7 +369,11 @@ namespace S2A.Dsh
         {
             if (stage is "gs" or "hs" or "ds") throw new DshError("export failed", $"{stage} 着色器不出 .spv（#783 只出 vs / ps / cs）");
             PackSpv = DshCompiler.PackOut ? new Dictionary<string, byte[]>() : null;
-            var written = DshCompiler.Compile(key, stage, code, ctl, outDir, xc, tablesDir, workRoot);
+            // Adaptive Metal texture arguments have no corresponding SPIR-V descriptors.
+            bool raw1dSuppressed = DshRaw1D.Suppress; DshRaw1D.Suppress = true;
+            List<string> written;
+            try { written = DshCompiler.Compile(key, stage, code, ctl, outDir, xc, tablesDir, workRoot); }
+            finally { DshRaw1D.Suppress = raw1dSuppressed; }
             string jsonName = key + "_b.json", spvName = key + "_b.spv";
             string jsonText = !DshCompiler.PackOut ? File.ReadAllText(Path.Combine(outDir, jsonName))
                 : DshCompiler.PackFiles != null && DshCompiler.PackFiles.TryGetValue(jsonName, out var t) ? t

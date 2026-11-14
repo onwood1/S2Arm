@@ -9875,6 +9875,26 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (bl && sid > 0) { int ok = sid < g_nsreg && g_sreg_ok[sid]; samp_par sp = ok ? g_sreg[sid] : (samp_par){0};   // g_rmu is already held in this section
                 if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d (0 nearest / 1 linear; 2–5 with mips) wrap=%d,%d,%d border=%g,%g,%g,%g lod=%g..%g bias=%g aniso=%g cmp=%d/%d %s", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf,
                            (int)sp.ws, (int)sp.wt, (int)sp.wr, sp.border[0], sp.border[1], sp.border[2], sp.border[3], sp.lod_min, sp.lod_max, sp.lod_bias, sp.aniso, (int)sp.cmp_mode, (int)sp.cmp_func, ss ? "real" : "failed"); }
+        } else if (b->kind == NVN_RB_RAW1D_TEX || b->kind == NVN_RB_RAW1D_INFO) {
+            int tid = ubo_tex_id(ubo_packed(nvn_stage, b));
+            void *tv = NULL; uint64_t trid = tex_fast_rid(tid, &tv);
+            __unsafe_unretained id<MTLTexture> t = (__bridge id<MTLTexture>)tv;
+            int isbuf = t && t.textureType == MTLTextureTypeTextureBuffer;
+            int cls = isbuf ? mtl_pf_dpf(t.pixelFormat) : NVN_DPF_FLOAT;
+            if (b->kind == NVN_RB_RAW1D_INFO) {
+                id<MTLBuffer> flags; size_t off = arena_alloc(16, &flags);
+                uint32_t data[4] = {isbuf ? (uint32_t)cls + 1u : 0u, 0, 0, 0};
+                memcpy((uint8_t *)flags.contents + off, data, sizeof data);
+                if (bl) PD("B %llu st%d raw1d reg%d+%#x tid=%d kind=%u", g_stat_pass, nvn_stage, reg, b->off, tid, data[0]);
+                static unsigned reported; if (isbuf && !(reported & (1u << data[0]))) {
+                    reported |= 1u << data[0]; MLOG("descriptor-driven 1D fetch: buffer class %u, shader %s stage %d (native register bits)", data[0], sh->key, nvn_stage);
+                }
+                slots[aid] = flags.gpuAddress + off; USE(flags, MTLResourceUsageRead);
+            } else {
+                if (!isbuf || cls != b->dpf) t = nil;
+                if (!t) { t = dummy_tex(MTLTextureTypeTextureBuffer, b->dpf); trid = g_dummy_tex_rid[MTLTextureTypeTextureBuffer][b->dpf & 3]; }
+                slots[aid] = trid; USE(t, MTLResourceUsageRead);
+            }
         } else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TEXU) {
             int tid = b->kind == NVN_RB_TEXU ? ubo_tex_id(ubo_packed(nvn_stage, b)) : (int)(tex_slot_h(S.tex[nvn_stage], S.img[nvn_stage], reg) & 0xfffff);
             if (b->unb && b->kind == NVN_RB_TEX) ub_note(ubw, b->unb - 1, tid);   // the texture registered at this ID, as the NVN driver writes its descriptor

@@ -99,6 +99,11 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             // byte offset ÷ 8, an NVN handle being 64-bit). Paper Mario: The Thousand-Year Door's reflection shaders: array<texture2d<float>, 32> fp_t2d_cb14_0, the handles of uniform slot 11
             else if ([k isEqualToString:@"tex_ubo"]) { r->kind = NVN_RB_TEXU; dummy_kind(el, &r->dtt, &r->dpf); r->off = (uint16_t)[b[@"off"] intValue]; o->bindless = 1;
                 if (n) { if (n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n); r->n = (uint8_t)n; } }
+            else if ([k isEqualToString:@"raw1d_tex"] || [k isEqualToString:@"raw1d_info"]) {
+                r->kind = [k isEqualToString:@"raw1d_tex"] ? NVN_RB_RAW1D_TEX : NVN_RB_RAW1D_INFO;
+                if (r->kind == NVN_RB_RAW1D_TEX) dummy_kind(ty, &r->dtt, &r->dpf);
+                r->off = (uint16_t)[b[@"off"] intValue]; o->bindless = 1;
+            }
             else if ([k isEqualToString:@"samp_ubo"]) { r->kind = NVN_RB_SAMPU; r->off = (uint16_t)[b[@"off"] intValue]; r->sid = [b[@"sid"] boolValue]; o->bindless = 1;
                 if (n) { if (n > 32) FAIL("B binding %s: array of %d", nm.UTF8String, n); r->n = (uint8_t)n; } }
             else if ([k isEqualToString:@"samp_id"]) r->kind = NVN_RB_SAMPI;
@@ -143,9 +148,9 @@ int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
             else if ([k isEqualToString:@"drvcb"] && [b[@"bank"] intValue] >= 24 && [b[@"bank"] intValue] < 32) { r->kind = NVN_RB_PUSH; r->reg = (uint16_t)([b[@"bank"] intValue] - 24); }
             else if ([k isEqualToString:@"drvcb"]) r->kind = [b[@"bank"] intValue] == 2 ? NVN_RB_DRV2 : NVN_RB_DRV0;
             else FAIL("B binding kind %s not implemented (%s)", k.UTF8String, [b[@"msl_name"] UTF8String]);
-            if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP || r->kind == NVN_RB_SBUFU || r->kind == NVN_RB_TEXU || r->kind == NVN_RB_IMGU || r->kind == NVN_RB_TBUFU || r->kind == NVN_RB_SAMPU || r->kind == NVN_RB_SAMPI) && reg < 0)
+            if ((r->kind == NVN_RB_CBUF || r->kind == NVN_RB_SAMP || r->kind == NVN_RB_SAMPT || r->kind == NVN_RB_TEX || r->kind == NVN_RB_IMG || r->kind == NVN_RB_TBUF || r->kind == NVN_RB_SBUFP || r->kind == NVN_RB_UBOP || r->kind == NVN_RB_SBUFU || r->kind == NVN_RB_TEXU || r->kind == NVN_RB_IMGU || r->kind == NVN_RB_TBUFU || r->kind == NVN_RB_SAMPU || r->kind == NVN_RB_SAMPI || r->kind == NVN_RB_RAW1D_TEX || r->kind == NVN_RB_RAW1D_INFO) && reg < 0)
                 FAIL("B binding %s has no resolved slot number", [b[@"msl_name"] UTF8String]);
-            if (r->kind == NVN_RB_TEXU || r->kind == NVN_RB_SAMPU || r->kind == NVN_RB_TBUFU || r->kind == NVN_RB_IMGU) pair_from_name(nm, r);   // the second word of a separate handle
+            if (r->kind == NVN_RB_TEXU || r->kind == NVN_RB_SAMPU || r->kind == NVN_RB_TBUFU || r->kind == NVN_RB_IMGU || r->kind == NVN_RB_RAW1D_TEX || r->kind == NVN_RB_RAW1D_INFO) pair_from_name(nm, r);   // the second word of a separate handle
             o->nb++;
         }
         NSDictionary *dr = j[@"drv_reads"];

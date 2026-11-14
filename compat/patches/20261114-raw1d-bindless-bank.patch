@@ -1,0 +1,30 @@
+diff --git a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+index 84ba0dde..600fdb23 100644
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -555,6 +555,12 @@ namespace Ryujinx.Graphics.Shader
+         {
+         }
+ 
++        // Preserve the constant bank for bindless handles as well as bound slots.
++        void RecordTexelFetch1D(int handle, int cbufSlot)
++        {
++            RecordTexelFetch1D(handle);
++        }
++
+         /// <summary>
+         /// S2A：只问贴图是不是贴图缓冲（TEX / TLDS 一维时区分「一维贴图」与「贴图缓冲」，翻出的代码只取决于这一位）。
+         /// 与 <see cref="QuerySamplerType"/> 分开记，匹配时只比「是不是缓冲」——出包离线烘焙按缺省类型翻，运行时别的非缓冲类型不该被拒（10-22 暗黑2 27 个「贴图类型」误拒）
+diff --git a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+index a409cc90..892286c5 100644
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -906,7 +906,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                             sources[^1] = context.ConditionalSelect(oneRow, fetchX, context.BitwiseAnd(fetchX, context.ISubtract(rowW, Const(1))));
+                             sources.Add(context.ConditionalSelect(oneRow, Const(0), context.ShiftRightU32(fetchX, context.FindLSB(rowW))));
+                             inBounds = context.ICompareLessUnsigned(fetchX, context.IMultiply(rowW, rowsH));
+-                            context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle);
++                            context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle, cbufSlot);
+                         }
+                         else
+                         {

@@ -54,7 +54,7 @@ def options():
     d = os.environ.get('XLATE_DEBUG', 'gs,cs')   # 11-07 起缺省只几何、计算开 DebugMode（S2A.Dsh JobFor 同改）；'1' 全开、'0' 全关是另外的链版本
     return 'debug=%s reduced=%s' % (d if d in ('gs', 'gs,cs') else d != '0', os.environ.get('XLATE_REDUCED', '1') == '1')
 
-ABI = 1   # host <-> library interface version (see the file head): bump it, and only it, when the host's way of reading a library changes
+ABI = 2   # host <-> library interface version (see the file head): bump it, and only it, when the host's way of reading a library changes
 
 def xlate_fp(read=None):   # 翻译器指纹 = 生产翻译缓存键里的 DshChain.Xfp（同一份清单、同一算法）；read(仓库相对路径) → 字节，缺省读工作树
     read = read or (lambda f: open(os.path.join(ROOT, f), 'rb').read())

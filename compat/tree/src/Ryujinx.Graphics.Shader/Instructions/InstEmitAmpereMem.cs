@@ -906,7 +906,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                             sources[^1] = context.ConditionalSelect(oneRow, fetchX, context.BitwiseAnd(fetchX, context.ISubtract(rowW, Const(1))));
                             sources.Add(context.ConditionalSelect(oneRow, Const(0), context.ShiftRightU32(fetchX, context.FindLSB(rowW))));
                             inBounds = context.ICompareLessUnsigned(fetchX, context.IMultiply(rowW, rowsH));
-                            context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle);
+                            context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle, cbufSlot);
                         }
                         else
                         {

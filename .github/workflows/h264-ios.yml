@@ -116,6 +116,16 @@ jobs:
         run: |
           set -o pipefail
           S2A_CS=1 bash pack/shell_build.sh "$RUNNER_TEMP/H264-Shell" 2>&1 | tee build/h264-evidence/ios-build.log
+          python3 - <<'PY'
+          import pathlib,re
+          values=set()
+          for p in list(pathlib.Path('graphics/tools/direct/dsh/obj').rglob('DshChain.g.cs')) + list(pathlib.Path('build').rglob('DshChain.g.cs')):
+              text=p.read_text()
+              v=re.search(r'Xfp\s*=\s*"([0-9a-f]+)"',text)
+              if v: values.add(v.group(1))
+          print('BUILT_DSH_FINGERPRINTS',','.join(sorted(values)))
+          pathlib.Path('build/h264-evidence/translator-fingerprint.txt').write_text('\n'.join(sorted(values))+'\n')
+          PY
           tar -czf build/H264-Shell.tar.gz -C "$RUNNER_TEMP" H264-Shell
           shasum -a 256 build/H264-Shell.tar.gz | tee build/h264-evidence/artifact.sha256
       - name: Upload build evidence
